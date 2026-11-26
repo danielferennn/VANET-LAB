@@ -112,13 +112,18 @@ command -v flock >/dev/null 2>&1 || die "flock is required to serialise simulati
 
 mkdir -p "${RUNS_ROOT}" || die "cannot create ${RUNS_ROOT}"
 
+# One simulation at a time: veins_launchd listens on a single port.
+# The lock is taken before the run directory is created, so a queued run does
+# not leave an empty directory behind.
+exec 9>"${RUNS_ROOT}/.lock"
+if ! flock -n 9; then
+    echo "[i] Another run is active; waiting for the simulation lock..."
+    flock -w 1800 9 || die "another run has held the simulation lock for more than 30 minutes"
+fi
+
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 RUN_DIR="${RUNS_ROOT}/map_${MAP_KEY}/${ALGO}/${RUN_ID}"
 mkdir -p "${RUN_DIR}" || die "cannot create ${RUN_DIR}"
-
-# One simulation at a time: veins_launchd listens on a single port.
-exec 9>"${RUNS_ROOT}/.lock"
-flock -w 1800 9 || die "another run has held the simulation lock for more than 30 minutes"
 
 if [ "${TEST}" = "both" ]; then
     TESTS=(ping udp)
@@ -273,8 +278,10 @@ for current_test in "${TESTS[@]}"; do
     echo "=========================================================="
 
     STARTED="$(date -Iseconds)"
+    # 9>&- keeps the lock fd away from run_cmd.sh and from the veins_launchd
+    # daemon it starts; otherwise the daemon would hold the lock forever.
     "${WORKSPACE}/run_cmd.sh" "${CONFIG}" "${DURATION}" \
-        --map "${MAP_KEY}" --result-dir="${RUN_DIR}" 2>&1 | tee -a "${RUN_DIR}/run.log"
+        --map "${MAP_KEY}" --result-dir="${RUN_DIR}" 2>&1 9>&- | tee -a "${RUN_DIR}/run.log"
     RC=${PIPESTATUS[0]}
     FINISHED="$(date -Iseconds)"
 
